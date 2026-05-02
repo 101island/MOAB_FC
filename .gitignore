@@ -1,0 +1,10 @@
+*.log
+*.tmp
+*.bak
+*.mat
+*.csv
+logs/
+data/
+local/
+tuning.lua
+altitude_controller/tuning.lua
