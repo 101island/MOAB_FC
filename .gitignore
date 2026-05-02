@@ -8,3 +8,4 @@ data/
 local/
 tuning.lua
 altitude_controller/tuning.lua
+attitude_sas/tuning.lua

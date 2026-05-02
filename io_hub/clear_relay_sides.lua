@@ -10,7 +10,7 @@ local function loadFirst(paths)
     error("cannot load module: " .. table.concat(paths, ", "))
 end
 
-local cfg = loadFirst({ "io_hub/fleet_config.lua", "fleet_config.lua" })
+local cfg = loadFirst({ "fleet_config.lua", "io_hub/fleet_config.lua" })
 
 local args = { ... }
 local actuatorName = args[1] or "SteamVent"

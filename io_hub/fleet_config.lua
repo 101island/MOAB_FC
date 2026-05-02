@@ -121,7 +121,12 @@ return {
     },
 
     actuatorOrder = {
-        "SteamVent"
+        "SteamVent",
+        -- Four attitude props. Raw peripheral mapping is documented below.
+        "PropTailLeft",
+        "PropTailRight",
+        "PropNoseLeft",
+        "PropNoseRight"
     },
 
     actuators = {
@@ -145,6 +150,80 @@ return {
             failsafe = 0,
             pwmEnabled = true,
             pwmPeriod = 0.05
+        },
+
+        -- Rotation speed controller mapping policy:
+        --   raw suffix 1/2/3/4 is NOT a flight-control semantic name.
+        --   Naming convention is body-frame view: Nose/Tail and Left/Right.
+        --   A = pitch, A+ = nose up.
+        --   B = roll, B+ = clockwise when viewed from tail to nose.
+        -- Observed positive-command effects:
+        --   #1 right tail:  A+ B+
+        --   #2 left tail:   A+ B-
+        --   #3 right nose:  A- B+
+        --   #4 left nose:   A- B-
+        PropTailLeft = {
+            enabled = true,
+            driver = "method",
+            peripheralType = "Create_RotationSpeedController",
+            remoteName = "Create_RotationSpeedController_2",
+            method = "setTargetSpeed",
+            readMethod = "getTargetSpeed",
+            pitchEffect = 1,
+            rollEffect = -1,
+            scale = 1,
+            bias = 0,
+            outputMin = -256,
+            outputMax = 256,
+            failsafe = 0
+        },
+
+        PropTailRight = {
+            enabled = true,
+            driver = "method",
+            peripheralType = "Create_RotationSpeedController",
+            remoteName = "Create_RotationSpeedController_1",
+            method = "setTargetSpeed",
+            readMethod = "getTargetSpeed",
+            pitchEffect = 1,
+            rollEffect = 1,
+            scale = 1,
+            bias = 0,
+            outputMin = -256,
+            outputMax = 256,
+            failsafe = 0
+        },
+
+        PropNoseLeft = {
+            enabled = true,
+            driver = "method",
+            peripheralType = "Create_RotationSpeedController",
+            remoteName = "Create_RotationSpeedController_4",
+            method = "setTargetSpeed",
+            readMethod = "getTargetSpeed",
+            pitchEffect = -1,
+            rollEffect = -1,
+            scale = 1,
+            bias = 0,
+            outputMin = -256,
+            outputMax = 256,
+            failsafe = 0
+        },
+
+        PropNoseRight = {
+            enabled = true,
+            driver = "method",
+            peripheralType = "Create_RotationSpeedController",
+            remoteName = "Create_RotationSpeedController_3",
+            method = "setTargetSpeed",
+            readMethod = "getTargetSpeed",
+            pitchEffect = -1,
+            rollEffect = 1,
+            scale = 1,
+            bias = 0,
+            outputMin = -256,
+            outputMax = 256,
+            failsafe = 0
         }
     }
 }

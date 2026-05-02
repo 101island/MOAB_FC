@@ -10,8 +10,8 @@ local function loadFirst(paths)
     error("cannot load module: " .. table.concat(paths, ", "))
 end
 
-local sensors = loadFirst({ "io_hub/sensors.lua", "sensors.lua" })
-local actuators = loadFirst({ "io_hub/actuators.lua", "actuators.lua" })
+local sensors = loadFirst({ "sensors.lua", "io_hub/sensors.lua" })
+local actuators = loadFirst({ "actuators.lua", "io_hub/actuators.lua" })
 
 local M = {}
 

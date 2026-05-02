@@ -10,9 +10,9 @@ local function loadFirst(paths)
     error("cannot load module: " .. table.concat(paths, ", "))
 end
 
-local cfg = loadFirst({ "io_hub/fleet_config.lua", "fleet_config.lua" })
-local hal = loadFirst({ "io_hub/hal.lua", "hal.lua" })
-local display = loadFirst({ "io_hub/display.lua", "display.lua" })
+local cfg = loadFirst({ "fleet_config.lua", "io_hub/fleet_config.lua" })
+local hal = loadFirst({ "hal.lua", "io_hub/hal.lua" })
+local display = loadFirst({ "display.lua", "io_hub/display.lua" })
 
 local args = { ... }
 local seconds = tonumber(args[1]) or 10

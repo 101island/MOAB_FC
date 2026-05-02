@@ -57,7 +57,10 @@ local function wrap(spec)
         return nil, "peripheral API is unavailable"
     end
 
-    local peripheralType = spec.peripheralType or "redstone_relay"
+    local peripheralType = spec.peripheralType
+    if peripheralType == nil then
+        peripheralType = spec.driver == "method" and "" or "redstone_relay"
+    end
     local name = spec.remoteName
     if type(name) == "string" and name ~= "" then
         local device = peripheral.wrap(name)
@@ -65,7 +68,7 @@ local function wrap(spec)
             return nil, "cannot wrap peripheral [" .. name .. "]"
         end
 
-        if type(peripheral.getType) == "function" then
+        if type(peripheral.getType) == "function" and peripheralType ~= "" then
             local actualType = peripheral.getType(name)
             if actualType ~= peripheralType then
                 return nil, "[" .. tostring(name) .. "] is [" .. tostring(actualType) ..
@@ -124,6 +127,24 @@ local function getAnalog(device, side)
         return device.getAnalogueOutput(side)
     end
     return nil, "device has no analog input readback method"
+end
+
+local function callMethod(device, method, ...)
+    if type(method) ~= "string" or method == "" then
+        return nil, "missing method"
+    end
+    local fn = device[method]
+    if type(fn) ~= "function" then
+        return nil, "device has no method [" .. tostring(method) .. "]"
+    end
+    local ok, result = pcall(fn, ...)
+    if not ok then
+        return nil, result
+    end
+    if result == nil then
+        return true
+    end
+    return result
 end
 
 local function setExactTarget(state, exact)
@@ -213,6 +234,38 @@ function M.update(cfg, name, force)
     end
 
     local state = getState(name)
+    local driver = spec.driver or "redstone_relay"
+    if driver == "method" then
+        if not force and state.initialized and state.output == state.exactOutput then
+            return {
+                name = name,
+                address = address,
+                command = state.command,
+                output = state.output,
+                exactOutput = state.exactOutput,
+                skipped = true
+            }
+        end
+
+        local ok, methodErr = callMethod(device, spec.method or spec.writeMethod, state.exactOutput)
+        if ok == nil and methodErr then
+            return nil, methodErr
+        end
+
+        state.output = state.exactOutput
+        state.lastUpdate = now()
+        state.initialized = true
+
+        return {
+            name = name,
+            address = address,
+            command = state.command,
+            output = state.output,
+            exactOutput = state.exactOutput,
+            method = spec.method or spec.writeMethod
+        }
+    end
+
     local timestamp = now()
     local period = pwmPeriod(spec, cfg)
     if not force and state.initialized and timestamp - state.lastUpdate < period then
@@ -305,7 +358,17 @@ function M.readAll(cfg)
         local spec = cfg.actuators[name]
         local device, err, address = wrap(spec)
         if device then
-            local value, readErr = getAnalog(device, spec.outputSide or "left")
+            local value, readErr
+            if spec.driver == "method" then
+                if type(spec.readMethod) == "string" and spec.readMethod ~= "" then
+                    value, readErr = callMethod(device, spec.readMethod)
+                else
+                    local state = getState(name)
+                    value = state.output
+                end
+            else
+                value, readErr = getAnalog(device, spec.outputSide or "left")
+            end
             local state = getState(name)
             result[name] = value
             result[name .. "Address"] = address

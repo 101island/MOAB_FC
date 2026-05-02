@@ -36,6 +36,16 @@ MOAB_FC/
 │   ├── main.lua            # AC 主程序
 │   ├── startup.lua         # AC 自启动入口
 │   └── test_iohub.lua      # 读高度/速度并写 SteamVent 的链路测试
+├── attitude_sas/           # Pitch/Roll SAS 节点，不直接访问硬件
+│   ├── config.lua          # SAS 本机通信与控制配置
+│   ├── client.lua          # IO Hub RPC 客户端
+│   ├── rednet_util.lua     # 本节点 rednet modem 打开工具
+│   ├── pid.lua             # PID 基础模块
+│   ├── runtime.lua         # Pitch/Roll PID 与四路混控
+│   ├── display.lua         # SAS 本机 monitor 显示与调参
+│   ├── main.lua            # SAS 主程序
+│   ├── startup.lua         # SAS 自启动入口
+│   └── test_iohub.lua      # 读姿态并写四路桨的链路测试
 ├── tools/
 │   ├── inspect_peripherals.lua
 │   ├── probe_peripheral.lua
@@ -54,6 +64,12 @@ MOAB_FC/
 Altitude
 VerticalSpeed
 SteamVent
+GimbalXAngle
+GimbalZAngle
+PropTailLeft
+PropTailRight
+PropNoseLeft
+PropNoseRight
 ```
 
 不要让 `Roll_SAS`、`Altitude_Controller`、`FC` 各自维护外设 side、remoteName、输出极性等硬件细节。
@@ -548,10 +564,108 @@ altitude_controller/main.lua 100 --enable
 
 ## 当前约束
 
-- 当前已接入 Altitude Controller 的基础串级高度控制；FC、SAS、横向/姿态控制仍未接入。
+- 当前已接入 Altitude Controller 的基础串级高度控制，以及 Pitch/Roll SAS 的基础 PID 混控；FC 和横向控制仍未接入。
 - `io_hub` 是单点硬件抽象层；后续 FC 负责混控和权限仲裁。
 - 小数执行器命令通过 PDM/PWM 在相邻整数输出之间切换，长期平均值接近目标值。
-- 执行器输出默认按 `0..15` 处理，适合红石模拟输出链路。
+- `SteamVent` 输出按 `0..15` 红石模拟强度处理；`Create_RotationSpeedController` 输出按其方法接口的转速目标处理，当前配置限幅为 `-256..256`。
+
+## Pitch/Roll SAS 节点
+
+四个控制螺旋桨的 raw 外设名只在 `io_hub/fleet_config.lua` 内维护。当前观测结果：
+
+```text
+PropTailRight -> Create_RotationSpeedController_1 -> A+ B+
+PropTailLeft  -> Create_RotationSpeedController_2 -> A+ B-
+PropNoseRight -> Create_RotationSpeedController_3 -> A- B+
+PropNoseLeft  -> Create_RotationSpeedController_4 -> A- B-
+```
+
+其中 `A = pitch`，`A+ = 翘头`；`B = roll`，`B+ = 从后看顺时针`。`attitude_sas` 只使用逻辑执行器名，并从 IO Hub 配置读取 `pitchEffect / rollEffect` 生成四路混控输出。
+
+先在 IO Hub 电脑上运行：
+
+```text
+main.lua
+```
+
+在 SAS 电脑上做链路测试：
+
+```text
+attitude_sas/test_iohub.lua <hubID> 16 4 0.5
+```
+
+如果 SAS 报 `missing pitch/roll sensor`，先回到 IO Hub 电脑运行 `test_io.lua sensors 0.5 5`。若没有 `GimbalXAngle/GimbalZAngle`，说明 IO Hub 电脑没有加载正确的 `fleet_config.lua/sensors.lua`，或 IO Hub `main.lua` 没有重启。
+
+启动 SAS，默认不开启 Pitch/Roll，也默认不开显示屏：
+
+```text
+attitude_sas/main.lua <hubID>
+```
+
+只开显示屏：
+
+```text
+attitude_sas/main.lua <hubID> --display
+```
+
+启动时直接开启两个控制器并打开显示屏：
+
+```text
+attitude_sas/main.lua <hubID> --enable --display
+```
+
+也可以只开启单轴：
+
+```text
+attitude_sas/main.lua <hubID> --pitch --display
+attitude_sas/main.lua <hubID> --roll --display
+```
+
+如果不保留 `attitude_sas/` 目录、而是把文件平铺到电脑根目录，显示模块文件名使用：
+
+```text
+attitude_config.lua        <- attitude_sas/config.lua
+attitude_client.lua        <- attitude_sas/client.lua
+attitude_pid.lua           <- attitude_sas/pid.lua
+attitude_runtime.lua       <- attitude_sas/runtime.lua
+attitude_display.lua       <- attitude_sas/display.lua
+attitude_rednet_util.lua   <- attitude_sas/rednet_util.lua
+```
+
+然后用根目录的启动文件运行：
+
+```text
+main.lua <hubID> --display
+```
+
+平铺模式下姿态 SAS 只读取上述 `attitude_*` 模块名，不再读取根目录的 `config.lua/client.lua/pid.lua/runtime.lua/display.lua`，避免误加载高度控制器文件。调参保存文件会写到 `attitude_tuning.lua`。
+
+键盘/显示屏按钮：
+
+- `p` / `[PON] [POFF]`：Pitch PID 开关
+- `b` / `[RON] [ROFF]`：Roll PID 开关
+- `[RD]` 或 `l`：读取 `attitude_sas/tuning.lua`
+- `[WR]` 或 `s`：写出当前调参到 `attitude_sas/tuning.lua`
+- `[R]` 或 `r`：重置 PID 积分和曲线
+- `q`：退出并只将四个姿态桨写为 `0`；不会调用 IO Hub `stop_all`，因此不会停止高度控制器的 `SteamVent`
+
+Pitch 前馈接口在 `attitude_sas/config.lua` 的 `controller.pitchFeedforward` 中配置：
+
+```lua
+pitchFeedforward = {
+    enabled = true,
+    sourceActuator = "",
+    gain = 0,
+    bias = 0
+}
+```
+
+如果后续 IO Hub 中加入主引擎逻辑名，例如 `MainThrust`，把 `sourceActuator = "MainThrust"`，则 pitch 修正量会叠加：
+
+```text
+pitch_ff = bias + gain * MainThrustCommand
+pitch_total = pitch_pid + pitch_ff
+```
 
 ## Steam Vent 执行器链路
 

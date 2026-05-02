@@ -53,14 +53,14 @@ return {
             outputMin = 0,
             outputMax = 15,
             levels = {
-                { altitude = 80, level = 4.00 },
-                { altitude = 100, level = 4.60 },
-                { altitude = 120, level = 5.25 },
-                { altitude = 140, level = 5.75 },
-                { altitude = 160, level = 6.25 },
-                { altitude = 180, level = 7.00 },
-                { altitude = 200, level = 7.35 },
-                { altitude = 220, level = 7.60 }
+                { altitude = 80, level = 7.55 },
+                { altitude = 100, level = 8.40 },
+                { altitude = 120, level = 8.77 },
+                { altitude = 140, level = 9.54 },
+                { altitude = 160, level = 10.30 },
+                { altitude = 180, level = 11.10 },
+                { altitude = 200, level = 12.00 },
+                { altitude = 220, level = 13.00 }
             }
         },
 
