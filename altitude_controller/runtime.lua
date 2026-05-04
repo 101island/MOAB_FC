@@ -196,6 +196,7 @@ function M.new(cfg, options)
     state.feedforward = feedforward.new(control.feedforward or {})
     state.lastTime = nil
     state.lastOutput = nil
+    state.pendingCommand = nil
     state.filteredSpeed = nil
     state.status = "init"
     state.lastSnapshot = nil
@@ -216,7 +217,11 @@ function M.setEnabled(state, enabled)
     if not state.enabled then
         resetPid(state)
         state.lastOutput = nil
-        local ok, err = client.stopAll(state.cfg)
+        state.pendingCommand = nil
+        local ok, err = client.writeActuator(state.cfg, actuatorName(state.cfg), 0)
+        if ok then
+            state.lastOutput = 0
+        end
         state.lastErr = err
         state.status = ok and "disabled" or tostring(err)
     else
@@ -322,6 +327,7 @@ local function applyControllerTuning(state, tuning)
 
     resetPid(state)
     state.lastOutput = nil
+    state.pendingCommand = nil
     state.filteredSpeed = nil
     state.status = "loaded tuning"
     state.lastErr = nil
@@ -436,17 +442,39 @@ end
 
 function M.step(state)
     local cfg = state.cfg
-    local snap, snapErr = client.snapshot(cfg)
+    local hName = altitudeName(cfg)
+    local vName = speedName(cfg)
+    local aName = actuatorName(cfg)
+    local sentCommand = state.pendingCommand
+    state.pendingCommand = nil
+    local writeValues = nil
+    if sentCommand ~= nil then
+        writeValues = { [aName] = sentCommand }
+    end
+
+    local snap, snapErr = client.exchange(cfg, {
+        readSensors = { hName, vName },
+        readActuators = { aName },
+        writeActuators = writeValues
+    })
     local timestamp = now()
     state.lastSnapshot = snap
 
     if not snap then
+        if sentCommand ~= nil then
+            state.pendingCommand = sentCommand
+        elseif state.enabled then
+            state.pendingCommand = 0
+        end
         state.status = tostring(snapErr)
         state.lastErr = snapErr
-        if state.enabled then
-            client.stopAll(cfg)
-        end
         return nil, snapErr
+    end
+
+    local writes = snap.writes or {}
+    local appliedWriteErr = writes[aName .. "Err"]
+    if sentCommand ~= nil and not appliedWriteErr then
+        state.lastOutput = sentCommand
     end
 
     local dt = state.period
@@ -460,9 +488,6 @@ function M.step(state)
 
     local sensors = snap.sensors or {}
     local actuators = snap.actuators or {}
-    local hName = altitudeName(cfg)
-    local vName = speedName(cfg)
-    local aName = actuatorName(cfg)
 
     local altitude = tonumber(sensors[hName])
     local rawSpeed = tonumber(sensors[vName])
@@ -471,9 +496,7 @@ function M.step(state)
         local err = sensorErr or "missing altitude/speed"
         state.status = tostring(err)
         state.lastErr = err
-        if state.enabled then
-            client.stopAll(cfg)
-        end
+        if state.enabled then state.pendingCommand = 0 end
         return nil, err
     end
 
@@ -493,6 +516,7 @@ function M.step(state)
         local outerOut, outerErr = pid.update(state.outerPid, state.targetAltitude, altitude, dt, -speed)
         if type(outerOut) ~= "number" then
             state.status = tostring(outerErr)
+            state.pendingCommand = 0
             return nil, outerErr
         end
         speedTarget = outerOut
@@ -513,6 +537,7 @@ function M.step(state)
         local innerOut, innerErr = pid.update(state.innerPid, speedTarget, speed, dt)
         if type(innerOut) ~= "number" then
             state.status = tostring(innerErr)
+            state.pendingCommand = 0
             return nil, innerErr
         end
         correction = innerOut
@@ -525,16 +550,14 @@ function M.step(state)
         command = clamp(command, state.lastOutput - state.maxStep, state.lastOutput + state.maxStep)
     end
 
-    local writeResult = nil
-    local writeErr = nil
+    local writeResult = writes
+    local writeErr = appliedWriteErr
     if state.enabled then
-        writeResult, writeErr = client.writeActuator(cfg, aName, command)
-        state.lastOutput = command
+        state.pendingCommand = command
     else
         command = 0
-        if state.lastOutput ~= 0 then
-            client.stopAll(cfg)
-            state.lastOutput = 0
+        if state.lastOutput ~= 0 or state.pendingCommand ~= nil then
+            state.pendingCommand = 0
         end
     end
 

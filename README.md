@@ -46,6 +46,17 @@ MOAB_FC/
 │   ├── main.lua            # SAS 主程序
 │   ├── startup.lua         # SAS 自启动入口
 │   └── test_iohub.lua      # 读姿态并写四路桨的链路测试
+├── fc/                     # 飞控节点，不直接访问硬件
+│   ├── config.lua          # FC 本机通信、前进 PID 和左右主推逻辑名
+│   ├── client.lua          # IO Hub RPC 客户端
+│   ├── rednet_util.lua     # 本节点 rednet modem 打开工具
+│   ├── pid.lua             # PID 基础模块
+│   ├── display.lua         # FC 左侧 monitor 显示
+│   ├── typewriter.lua      # Linked Typewriter 输入驱动
+│   ├── runtime.lua         # 前进速度 PID 与左右主推差速混控
+│   ├── main.lua            # FC 主程序
+│   ├── startup.lua         # FC 自启动入口
+│   └── test_typewriter.lua # Linked Typewriter 输入探测
 ├── tools/
 │   ├── inspect_peripherals.lua
 │   ├── probe_peripheral.lua
@@ -64,6 +75,8 @@ MOAB_FC/
 Altitude
 VerticalSpeed
 SteamVent
+MainThrusterLeft
+MainThrusterRight
 GimbalXAngle
 GimbalZAngle
 PropTailLeft
@@ -313,12 +326,14 @@ VerticalSpeed = ...
 
 ```text
 test_io.lua actuator SteamVent 15 2
+test_io.lua actuator MainThrusterRight 16 2
+test_io.lua actuator MainThrusterLeft 16 2
 ```
 
 含义：
 
-- `SteamVent`：执行器逻辑名
-- `15`：命令值
+- `SteamVent` / `MainThrusterRight` / `MainThrusterLeft`：执行器逻辑名
+- `15` 或 `16`：命令值；`SteamVent` 是红石 `0..15`，主推变速器当前按 `-256..256` 转速目标处理
 - `2`：保持 2 秒
 
 停止：
@@ -331,9 +346,11 @@ test_io.lua stop
 
 ```text
 test_io.lua sweep SteamVent 0 15 1 0.5
+test_io.lua sweep MainThrusterRight -32 32 16 0.5
+test_io.lua sweep MainThrusterLeft -32 32 16 0.5
 ```
 
-含义：从 0 到 15，每次加 1，每档保持 0.5 秒。
+含义：从起始值到结束值，每次增加指定步长，每档保持 0.5 秒。主推逻辑命令已归一化：正值表示前推；其中左推 raw #6 在 IO Hub 内部使用 `scale = -1` 反向。
 
 ## 第五步：本机测试显示屏
 
@@ -568,6 +585,7 @@ altitude_controller/main.lua 100 --enable
 - `io_hub` 是单点硬件抽象层；后续 FC 负责混控和权限仲裁。
 - 小数执行器命令通过 PDM/PWM 在相邻整数输出之间切换，长期平均值接近目标值。
 - `SteamVent` 输出按 `0..15` 红石模拟强度处理；`Create_RotationSpeedController` 输出按其方法接口的转速目标处理，当前配置限幅为 `-256..256`。
+- 主推已在 IO Hub 中以 `MainThrusterRight` / `MainThrusterLeft` 接入，分别对应 `Create_RotationSpeedController_5` / `_6`；左推 raw 极性相反，已在 IO Hub 中用 `scale = -1` 归一化。
 
 ## Pitch/Roll SAS 节点
 
@@ -596,11 +614,25 @@ attitude_sas/test_iohub.lua <hubID> 16 4 0.5
 
 如果 SAS 报 `missing pitch/roll sensor`，先回到 IO Hub 电脑运行 `test_io.lua sensors 0.5 5`。若没有 `GimbalXAngle/GimbalZAngle`，说明 IO Hub 电脑没有加载正确的 `fleet_config.lua/sensors.lua`，或 IO Hub `main.lua` 没有重启。
 
-启动 SAS，默认不开启 Pitch/Roll，也默认不开显示屏：
+启动 SAS，默认开启 Pitch/Roll，但默认不开显示屏：
 
 ```text
 attitude_sas/main.lua <hubID>
 ```
+
+把 `attitude_sas/startup.lua` 作为 SAS 电脑的开机入口时，也保持同样默认：Pitch/Roll 开启、Display 关闭。运行后可在电脑终端按键控制：
+
+```text
+p: Pitch 开关
+b: Roll 开关
+d: Display 开关
+l: 读取 tuning
+s: 写入 tuning
+r: 重置 PID
+q: 退出并把四路姿态桨清零
+```
+
+按 `s` 写出的 `attitude_sas/tuning.lua` 会保存 Pitch/Roll 两个环的开启状态；下次启动会先读 tuning 覆盖默认值。Display 开关不保存，始终由启动参数 `--display` 或终端 `d` 键控制。
 
 只开显示屏：
 
@@ -637,6 +669,158 @@ attitude_rednet_util.lua   <- attitude_sas/rednet_util.lua
 ```text
 main.lua <hubID> --display
 ```
+
+## FC 前进速度 PID
+
+FC 只通过 IO Hub 逻辑名读写：
+
+```text
+ForwardSpeed
+MainThrusterLeft
+MainThrusterRight
+```
+
+当前控制律：
+
+```text
+速度 PID: 目标前进速度 - 当前前进速度 -> 主推共同量 base
+转弯输入: turnCommand -> 左右主推差速
+左主推: base + turnCommand * leftTurnSign
+右主推: base + turnCommand * rightTurnSign
+```
+
+IO Hub 已把左右主推极性归一化，所以 FC 中正的主推命令都表示前推。
+
+启动：
+
+```text
+fc/main.lua <hubID> <targetSpeed> --enable
+```
+
+例如：
+
+```text
+fc/main.lua 65 2 --enable
+```
+
+也可以先不开输出，只观察读数：
+
+```text
+fc/main.lua 65 --target 2
+```
+
+如果出现 `timeout waiting for IO Hub`，先在 FC 电脑运行：
+
+```text
+fc/probe_iohub.lua 65
+```
+
+若 `PING ERR: timeout waiting for IO Hub`，问题在通信链路，不在前进 PID 或显示屏：确认 IO Hub 电脑正在运行 `main.lua`，确认两台电脑在同一有线 modem 网络内，且 `fleet_config.lua` 与 `fc/config.lua` 的 `protocol` 都是 `moab_fc_v1`。
+
+FC 显示分两种模式：
+
+- `compact`：实机运行 HUD，给左侧 1x1 显示屏，默认启用。
+- `debug`：调 PID 用的大屏 UI，给 3x2 显示屏。
+
+默认配置是：
+
+```lua
+display = {
+    enabled = true,
+    mode = "compact",
+    profiles = {
+        compact = { side = "left" },
+        debug = { side = "", remoteName = "" }
+    }
+}
+```
+
+调 PID 时接 3x2 显示屏。如果它接在 IO Hub 的同一个有线 modem 网络上，FC 通常也能直接 `peripheral.wrap` 到它。先在 FC 电脑运行：
+
+```text
+fc/probe_displays.lua
+```
+
+脚本会列出 FC 可见的所有 monitor 名称和尺寸，并在面积最大的显示屏上写一行测试字。若 3x2 不在列表里，说明 FC 不能直接访问它，需要检查有线 modem 网络连接。
+
+`debug` 模式在 `side` 和 `remoteName` 都为空时，会自动选择 FC 可见 monitor 中面积最大的那个，通常就是 IO Hub 3x2。然后运行：
+
+```text
+fc/main.lua 65 --target 2 --enable --debug-display
+```
+
+如果自动选择不对，就在 `fc/config.lua` 的 `display.profiles.debug.remoteName` 填 `probe_displays.lua` 输出的 monitor 名称。
+
+实机接打字机时使用左侧 1x1 显示屏，运行：
+
+```text
+fc/main.lua 65 --target 2 --enable --compact-display
+```
+
+默认会从 `fc/config.lua` 的 `typewriter.side = "top"` 读取 Linked Typewriter。它和终端键盘使用同一套 action：
+
+```text
+Space: 前进 PID 输出开关
+W/S: 目标前进速度 +/- speedStep，支持按住重复
+A/D: 左右主推差速 +/- turnStep，支持按住重复
+X: 差速回中
+0: 目标速度归零
+L: 读取 fc/tuning.lua
+V: 写入 fc/tuning.lua
+R: 重置 PID
+M: 显示屏开关
+Q: 退出并将左右主推写 0
+```
+
+如果打字机不在 `top`，只改：
+
+```lua
+typewriter = {
+    side = "实际所在面"
+}
+```
+
+调 PID 时如果不想让打字机输入参与控制，可加：
+
+```text
+fc/main.lua 65 --target 2 --enable --debug-display --no-typewriter
+```
+
+不要用 `monitor left fc/main.lua ...` 这种方式启动；那会把终端日志重定向到显示屏。直接在 FC 电脑终端运行 `fc/main.lua ...`，程序会自己 `peripheral.wrap("left")` 驱动左侧显示屏。
+
+如果只想在终端刷日志、不写显示屏：
+
+```text
+fc/main.lua 65 --target 2 --no-display
+```
+
+终端按键：
+
+```text
+space: 前进 PID 输出开关
+w/s: 目标前进速度 +/- speedStep
+a/d: 左右主推差速 +/- turnStep
+x: 差速回中
+0: 目标速度归零
+l: 读取 fc/tuning.lua
+v: 写入 fc/tuning.lua
+r: 重置 PID
+m: 显示屏开关
+q: 退出并将左右主推写 0
+```
+
+显示屏触摸按钮：
+
+```text
+[ON]/[OFF]: 前进 PID 输出开关
+[V-]/[V+]: 目标速度减小/增大
+[L]/[R]: 左右主推差速
+[C]: 差速回中
+[0]: 目标速度归零
+[RD]/[WR]: 读写 tuning
+```
+
+按 `v` 写出的 tuning 会保存 `enabled`、目标速度、差速量、PID 参数和混控参数。硬件逻辑名仍只维护在 `io_hub/fleet_config.lua` 与 `fc/config.lua` 的 `actuators` 字段中。
 
 平铺模式下姿态 SAS 只读取上述 `attitude_*` 模块名，不再读取根目录的 `config.lua/client.lua/pid.lua/runtime.lua/display.lua`，避免误加载高度控制器文件。调参保存文件会写到 `attitude_tuning.lua`。
 

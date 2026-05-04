@@ -10,8 +10,31 @@ local function loadFirst(paths)
     error("cannot load module: " .. table.concat(paths, ", "))
 end
 
-local client = loadFirst({ "attitude_sas/client.lua", "attitude_client.lua" })
-local pid = loadFirst({ "attitude_sas/pid.lua", "attitude_pid.lua" })
+local function runningDir()
+    if type(shell) == "table" and type(shell.getRunningProgram) == "function" and
+        type(fs) == "table" and type(fs.getDir) == "function" then
+        local dir = fs.getDir(shell.getRunningProgram() or "")
+        if dir and dir ~= "." then return dir end
+    end
+    return ""
+end
+
+local function joinPath(dir, name)
+    if dir == nil or dir == "" then return name end
+    if type(fs) == "table" and type(fs.combine) == "function" then
+        return fs.combine(dir, name)
+    end
+    return dir .. "/" .. name
+end
+
+local function modulePaths(name)
+    local path = joinPath(runningDir(), name)
+    if path == name then return { name } end
+    return { path, name }
+end
+
+local client = loadFirst(modulePaths("client.lua"))
+local pid = loadFirst(modulePaths("pid.lua"))
 
 local M = {}
 
@@ -76,12 +99,7 @@ local function availableNames(values)
 end
 
 local function tuningPath()
-    if type(fs) == "table" and type(fs.exists) == "function" and fs.exists("attitude_sas") then
-        if type(fs.isDir) ~= "function" or fs.isDir("attitude_sas") then
-            return "attitude_sas/tuning.lua"
-        end
-    end
-    return "attitude_tuning.lua"
+    return joinPath(runningDir(), "tuning.lua")
 end
 
 local function orderedKeys(map)
@@ -195,6 +213,8 @@ local function mergeControl(state, control)
     if type(control) ~= "table" then
         return nil, "invalid tuning payload"
     end
+    if control.pitchEnabled ~= nil then state.pitchEnabled = control.pitchEnabled == true end
+    if control.rollEnabled ~= nil then state.rollEnabled = control.rollEnabled == true end
     if control.targetPitch ~= nil then state.targetPitch = tonumber(control.targetPitch) or state.targetPitch end
     if control.targetRoll ~= nil then state.targetRoll = tonumber(control.targetRoll) or state.targetRoll end
     if control.pitchScale ~= nil then state.pitchScale = tonumber(control.pitchScale) or state.pitchScale end
@@ -249,6 +269,8 @@ function M.new(cfg, options)
         filteredPitch = nil,
         filteredRoll = nil,
         lastOutputs = {},
+        pendingWrite = nil,
+        pendingCommands = nil,
         zeroed = false,
         lastSnapshot = nil,
         hubConfig = nil,
@@ -309,6 +331,8 @@ function M.reset(state)
     state.filteredPitch = nil
     state.filteredRoll = nil
     state.lastOutputs = {}
+    state.pendingWrite = nil
+    state.pendingCommands = nil
     if type(state.history) == "table" then
         state.history.samples = {}
     end
@@ -343,6 +367,8 @@ function M.saveTuning(state, path)
     local target = path or tuningPath()
     local payload = {
         controller = {
+            pitchEnabled = state.pitchEnabled == true,
+            rollEnabled = state.rollEnabled == true,
             targetPitch = state.targetPitch,
             targetRoll = state.targetRoll,
             pitchScale = state.pitchScale,
@@ -409,16 +435,49 @@ local function effects(state, name)
     return pitchEffect, rollEffect
 end
 
+local function feedforwardSources(ff)
+    local names = {}
+    if type(ff.sourceActuators) == "table" then
+        for _, name in ipairs(ff.sourceActuators) do
+            if type(name) == "string" and name ~= "" then
+                names[#names + 1] = name
+            end
+        end
+    elseif type(ff.sourceActuator) == "string" and ff.sourceActuator ~= "" then
+        names[#names + 1] = ff.sourceActuator
+    end
+    if #names == 0 then
+        names[#names + 1] = "MainThrusterLeft"
+        names[#names + 1] = "MainThrusterRight"
+    end
+    return names
+end
+
+local function actuatorSourceValue(actuators, name)
+    if type(actuators) ~= "table" then
+        return nil
+    end
+    return tonumber(actuators[name .. "Command"]) or
+        tonumber(actuators[name .. "ExactOutput"]) or
+        tonumber(actuators[name])
+end
+
 local function feedforward(state, actuators)
     local ff = state.pitchFeedforward or {}
     if ff.enabled == false then
         return 0, 0
     end
     local source = 0
-    local name = ff.sourceActuator
-    if type(name) == "string" and name ~= "" and type(actuators) == "table" then
-        source = tonumber(actuators[name .. "Command"]) or tonumber(actuators[name .. "ExactOutput"]) or
-            tonumber(actuators[name]) or 0
+    local count = 0
+    for _, name in ipairs(feedforwardSources(ff)) do
+        local value = actuatorSourceValue(actuators, name)
+        if value ~= nil then
+            source = source + value
+            count = count + 1
+        end
+    end
+    if count > 0 then
+        source = source / count
     end
     local value = (tonumber(ff.bias) or 0) + (tonumber(ff.gain) or 0) * source
     value = clamp(value, tonumber(ff.outputMin), tonumber(ff.outputMax))
@@ -462,17 +521,69 @@ local function pushHistory(state, timestamp)
     end
 end
 
+local function queueProps(state, values)
+    state.pendingWrite = values
+    state.pendingCommands = values
+end
+
+local function restorePending(state, values, commands)
+    state.pendingWrite = values
+    state.pendingCommands = commands
+end
+
+local function writeError(state, writes)
+    writes = writes or {}
+    for _, name in ipairs(actuatorNames(state.cfg)) do
+        if writes[name .. "Err"] then
+            return writes[name .. "Err"]
+        end
+    end
+    return nil
+end
+
 function M.step(state)
-    local snap, snapErr = client.snapshot(state.cfg)
+    local pName = pitchName(state.cfg)
+    local rName = rollName(state.cfg)
+    local actuatorReads = {}
+    local ffConfig = state.pitchFeedforward or {}
+    if ffConfig.enabled ~= false then
+        for _, name in ipairs(feedforwardSources(ffConfig)) do
+            actuatorReads[#actuatorReads + 1] = name
+        end
+    end
+
+    local sentWrite = state.pendingWrite
+    local sentCommands = state.pendingCommands
+    state.pendingWrite = nil
+    state.pendingCommands = nil
+
+    local snap, snapErr = client.exchange(state.cfg, {
+        readSensors = { pName, rName },
+        readActuators = actuatorReads,
+        writeActuators = sentWrite
+    })
     local timestamp = now()
     state.lastSnapshot = snap
     if not snap then
+        if sentWrite then
+            restorePending(state, sentWrite, sentCommands)
+        elseif state.pitchEnabled or state.rollEnabled then
+            queueProps(state, propZeroMap(state.cfg))
+        end
         state.status = tostring(snapErr)
         state.lastErr = snapErr
-        if state.pitchEnabled or state.rollEnabled then
-            M.zeroProps(state)
-        end
         return nil, snapErr
+    end
+
+    local appliedWriteErr = writeError(state, snap.writes)
+    if sentWrite and not appliedWriteErr then
+        state.lastOutputs = {}
+        local allZero = true
+        for name, value in pairs(sentCommands or sentWrite) do
+            state.lastOutputs[name] = value
+            if value ~= 0 then allZero = false end
+        end
+        state.zeroed = allZero
     end
 
     local dt = state.period
@@ -484,8 +595,6 @@ function M.step(state)
 
     local sensors = snap.sensors or {}
     local actuators = snap.actuators or {}
-    local pName = pitchName(state.cfg)
-    local rName = rollName(state.cfg)
     local rawPitch = tonumber(sensors[pName])
     local rawRoll = tonumber(sensors[rName])
     local sensorErr = sensors[pName .. "Err"] or sensors[rName .. "Err"]
@@ -495,9 +604,7 @@ function M.step(state)
             "], have [" .. availableNames(sensors) .. "]")
         state.status = tostring(err)
         state.lastErr = err
-        if state.pitchEnabled or state.rollEnabled then
-            M.zeroProps(state)
-        end
+        if state.pitchEnabled or state.rollEnabled then queueProps(state, propZeroMap(state.cfg)) end
         return nil, err
     end
 
@@ -526,6 +633,7 @@ function M.step(state)
         if type(value) ~= "number" then
             state.status = tostring(info)
             state.lastErr = info
+            queueProps(state, propZeroMap(state.cfg))
             return nil, info
         end
         pitchOut = value
@@ -536,6 +644,7 @@ function M.step(state)
         if type(value) ~= "number" then
             state.status = tostring(info)
             state.lastErr = info
+            queueProps(state, propZeroMap(state.cfg))
             return nil, info
         end
         rollOut = value
@@ -556,6 +665,7 @@ function M.step(state)
         if not pe then
             state.status = tostring(effectErr)
             state.lastErr = effectErr
+            queueProps(state, propZeroMap(state.cfg))
             return nil, effectErr
         end
         local value = neutral + pitchCommand * pe + rollCommand * re
@@ -565,20 +675,15 @@ function M.step(state)
         commands[name] = value
     end
 
-    local writeResult = nil
-    local writeErr = nil
+    local writeResult = snap.writes
+    local writeErr = appliedWriteErr
     if state.pitchEnabled or state.rollEnabled then
-        writeResult, writeErr = writeProps(state, values)
-        if writeResult then
-            for name, value in pairs(values) do
-                state.lastOutputs[name] = value
-            end
-            state.zeroed = false
-        end
+        queueProps(state, values)
+        state.zeroed = false
     else
         commands = propZeroMap(state.cfg)
         if not state.zeroed then
-            writeResult, writeErr = M.zeroProps(state)
+            queueProps(state, commands)
         end
     end
 

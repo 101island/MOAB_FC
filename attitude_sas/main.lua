@@ -23,6 +23,29 @@ local function loadOptional(paths)
     return nil
 end
 
+local function runningDir()
+    if type(shell) == "table" and type(shell.getRunningProgram) == "function" and
+        type(fs) == "table" and type(fs.getDir) == "function" then
+        local dir = fs.getDir(shell.getRunningProgram() or "")
+        if dir and dir ~= "." then return dir end
+    end
+    return ""
+end
+
+local function joinPath(dir, name)
+    if dir == nil or dir == "" then return name end
+    if type(fs) == "table" and type(fs.combine) == "function" then
+        return fs.combine(dir, name)
+    end
+    return dir .. "/" .. name
+end
+
+local function modulePaths(name)
+    local path = joinPath(runningDir(), name)
+    if path == name then return { name } end
+    return { path, name }
+end
+
 local function mergeTable(target, source)
     if type(target) ~= "table" or type(source) ~= "table" then
         return target
@@ -37,18 +60,19 @@ local function mergeTable(target, source)
     return target
 end
 
-local cfg = loadFirst({ "attitude_sas/config.lua", "attitude_config.lua" })
-local tuning = loadOptional({ "attitude_sas/tuning.lua", "attitude_tuning.lua" })
+local cfg = loadFirst(modulePaths("config.lua"))
+local tuning = loadOptional(modulePaths("tuning.lua"))
 if tuning then
     mergeTable(cfg, tuning)
 end
 
-local runtime = loadFirst({ "attitude_sas/runtime.lua", "attitude_runtime.lua" })
+local runtime = loadFirst(modulePaths("runtime.lua"))
 
 local args = { ... }
 local startDisplay = false
 local startPitch = nil
 local startRoll = nil
+local explicitAxis = false
 for _, arg in ipairs(args) do
     local n = tonumber(arg)
     if n and n > 0 then
@@ -58,19 +82,27 @@ for _, arg in ipairs(args) do
     elseif arg == "--enable" then
         startPitch = true
         startRoll = true
+        explicitAxis = false
     elseif arg == "--pitch" then
         startPitch = true
+        explicitAxis = true
     elseif arg == "--roll" then
         startRoll = true
+        explicitAxis = true
     end
+end
+if explicitAxis then
+    if startPitch == nil then startPitch = false end
+    if startRoll == nil then startRoll = false end
 end
 
 cfg.display = cfg.display or {}
-cfg.display.enabled = startDisplay
 
-local display = nil
-if startDisplay then
-    display = loadFirst({ "attitude_sas/display.lua", "attitude_display.lua" })
+local display = loadOptional(modulePaths("display.lua"))
+local displayEnabled = startDisplay and display ~= nil
+cfg.display.enabled = displayEnabled
+if startDisplay and not display then
+    print("WARN: display requested but display module is missing")
 end
 
 local state = runtime.new(cfg, {
@@ -89,6 +121,39 @@ local function now()
         return os.clock()
     end
     return 0
+end
+
+local function clearDisplay(message)
+    if not display or type(display.clear) ~= "function" then
+        return
+    end
+    local previous = cfg.display and cfg.display.enabled
+    cfg.display.enabled = true
+    local ok, err = display.clear(cfg, message)
+    cfg.display.enabled = previous
+    if not ok and err then
+        print("DISPLAY ERR: " .. tostring(err))
+    end
+end
+
+local function setDisplayEnabled(enabled)
+    enabled = enabled == true
+    if enabled and not display then
+        print("DISPLAY ERR: display module is missing")
+        displayEnabled = false
+        cfg.display.enabled = false
+        return
+    end
+    if displayEnabled == enabled then
+        print("ACTION display=" .. tostring(displayEnabled))
+        return
+    end
+    if not enabled then
+        clearDisplay("DISPLAY OFF")
+    end
+    displayEnabled = enabled
+    cfg.display.enabled = displayEnabled
+    print("ACTION display=" .. tostring(displayEnabled))
 end
 
 local function applyAction(action)
@@ -118,6 +183,8 @@ local function applyAction(action)
         if not ok then print("SAVE ERR: " .. tostring(err)) end
     elseif action == "reset" then
         runtime.reset(state)
+    elseif action == "toggleDisplay" then
+        setDisplayEnabled(not displayEnabled)
     elseif action == "quit" then
         running = false
         runtime.setPitchEnabled(state, false)
@@ -131,7 +198,8 @@ local function controlLoop()
     print("hubID=" .. tostring(cfg.hubID) ..
         " pitch=" .. tostring(state.pitchEnabled) ..
         " roll=" .. tostring(state.rollEnabled) ..
-        " display=" .. tostring(startDisplay))
+        " display=" .. tostring(displayEnabled))
+    print("keys: p pitch, b roll, d display, l load, s save, r reset, q quit")
     local lastPrintedErr = nil
     while running do
         local ok, err = runtime.step(state)
@@ -141,11 +209,11 @@ local function controlLoop()
                 lastPrintedErr = err
             end
         else
-            if lastPrintedErr and startDisplay then
+            if lastPrintedErr and displayEnabled then
                 print("OK: link restored")
             end
             lastPrintedErr = nil
-            if not startDisplay then
+            if not displayEnabled then
                 print(runtime.summary(state))
             end
         end
@@ -154,18 +222,17 @@ local function controlLoop()
 end
 
 local function displayLoop()
-    if not startDisplay or not display then
-        while running do sleep(3600) end
-    end
     local period = tonumber(cfg.display and cfg.display.period) or 0.5
     local lastErr = nil
     while running do
-        local ok, err = display.draw(cfg, state)
-        if not ok and err ~= lastErr then
-            print("DISPLAY ERR: " .. tostring(err))
-            lastErr = err
-        elseif ok then
-            lastErr = nil
+        if displayEnabled and display then
+            local ok, err = display.draw(cfg, state)
+            if not ok and err ~= lastErr then
+                print("DISPLAY ERR: " .. tostring(err))
+                lastErr = err
+            elseif ok then
+                lastErr = nil
+            end
         end
         sleep(period)
     end
@@ -182,6 +249,8 @@ local function inputLoop()
                 applyAction("togglePitch")
             elseif p1 == "b" then
                 applyAction("toggleRoll")
+            elseif p1 == "d" then
+                applyAction("toggleDisplay")
             elseif p1 == "l" then
                 applyAction("load")
             elseif p1 == "s" then
@@ -191,7 +260,7 @@ local function inputLoop()
             elseif p1 == "q" then
                 applyAction("quit")
             end
-        elseif event == "monitor_touch" and startDisplay and display then
+        elseif event == "monitor_touch" and displayEnabled and display then
             local t = now()
             if t - lastMonitorTouchAt >= 0.6 then
                 lastMonitorTouchAt = t

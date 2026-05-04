@@ -1,10 +1,15 @@
-local PROGRAM = "altitude_controller/main.lua"
+local PROGRAM = "fc/main.lua"
 local FALLBACK_PROGRAM = "main.lua"
 
--- Uses targetAltitude from altitude_controller/config.lua unless a numeric
--- value is inserted before "--enable" below. Display is off by default.
+-- Real-flight default:
+--   compact HUD on the left 1x1 monitor
+--   linked typewriter enabled
+--   forward PID remains disabled until Space toggles it
 local ARGS = {
-    "--enable"
+    "65",
+    "--compact-display",
+    "--typewriter",
+    "--disable"
 }
 
 local START_DELAY = 1
@@ -62,7 +67,7 @@ end
 
 while true do
     local program = programPath()
-    print("AUTO: starting Altitude Controller")
+    print("AUTO: starting FC")
     print("AUTO: " .. program .. " " .. table.concat(ARGS, " "))
 
     local ok, result = pcall(function()

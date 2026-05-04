@@ -12,10 +12,30 @@ local function loadFirst(paths)
     error("cannot load module: " .. table.concat(paths, ", "))
 end
 
-local rednetUtil = loadFirst({
-    "attitude_sas/rednet_util.lua",
-    "attitude_rednet_util.lua"
-})
+local function runningDir()
+    if type(shell) == "table" and type(shell.getRunningProgram) == "function" and
+        type(fs) == "table" and type(fs.getDir) == "function" then
+        local dir = fs.getDir(shell.getRunningProgram() or "")
+        if dir and dir ~= "." then return dir end
+    end
+    return ""
+end
+
+local function joinPath(dir, name)
+    if dir == nil or dir == "" then return name end
+    if type(fs) == "table" and type(fs.combine) == "function" then
+        return fs.combine(dir, name)
+    end
+    return dir .. "/" .. name
+end
+
+local function modulePaths(name)
+    local path = joinPath(runningDir(), name)
+    if path == name then return { name } end
+    return { path, name }
+end
+
+local rednetUtil = loadFirst(modulePaths("rednet_util.lua"))
 
 local function now()
     if type(os) == "table" and type(os.epoch) == "function" then
@@ -126,6 +146,38 @@ function M.snapshot(cfg)
     return result, nil, reply
 end
 
+function M.snapshotSome(cfg, sensorNames, actuatorNames)
+    local result, err, reply = M.request(cfg, {
+        type = "get_snapshot_some",
+        sensors = sensorNames or {},
+        actuators = actuatorNames or {}
+    })
+    if not result then
+        return nil, err, reply
+    end
+    if type(result.sensors) ~= "table" or type(result.actuators) ~= "table" then
+        return nil, "invalid IO Hub snapshot reply", reply
+    end
+    return result, nil, reply
+end
+
+function M.exchange(cfg, options)
+    options = options or {}
+    local result, err, reply = M.request(cfg, {
+        type = "exchange",
+        readSensors = options.readSensors or options.sensors or {},
+        readActuators = options.readActuators or options.actuators or {},
+        writeActuators = options.writeActuators
+    })
+    if not result then
+        return nil, err, reply
+    end
+    if type(result.sensors) ~= "table" or type(result.actuators) ~= "table" then
+        return nil, "invalid IO Hub exchange reply", reply
+    end
+    return result, nil, reply
+end
+
 function M.ping(cfg)
     return M.request(cfg, { type = "ping" })
 end
@@ -138,8 +190,29 @@ function M.readSensors(cfg)
     return M.request(cfg, { type = "read_sensors" })
 end
 
+function M.readSensorsSome(cfg, names)
+    return M.request(cfg, {
+        type = "read_sensors_some",
+        names = names or {}
+    })
+end
+
 function M.readActuators(cfg)
     return M.request(cfg, { type = "read_actuators" })
+end
+
+function M.readActuatorsSome(cfg, names)
+    return M.request(cfg, {
+        type = "read_actuators_some",
+        names = names or {}
+    })
+end
+
+function M.readActuatorsCached(cfg, names)
+    return M.request(cfg, {
+        type = "read_actuators_cached",
+        names = names or {}
+    })
 end
 
 function M.writeActuator(cfg, name, value)

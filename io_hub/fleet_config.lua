@@ -122,6 +122,9 @@ return {
 
     actuatorOrder = {
         "SteamVent",
+        -- Main propulsion controllers. Positive logical command means forward thrust.
+        "MainThrusterLeft",
+        "MainThrusterRight",
         -- Four attitude props. Raw peripheral mapping is documented below.
         "PropTailLeft",
         "PropTailRight",
@@ -150,6 +153,42 @@ return {
             failsafe = 0,
             pwmEnabled = true,
             pwmPeriod = 0.05
+        },
+
+        -- Main propulsion speed controllers:
+        --   #5 is right main thruster; positive raw signal is forward.
+        --   #6 is left main thruster; positive raw signal is reverse, so scale=-1
+        --   normalizes the IO Hub logical command: positive means forward.
+        MainThrusterRight = {
+            enabled = true,
+            driver = "method",
+            peripheralType = "Create_RotationSpeedController",
+            remoteName = "Create_RotationSpeedController_5",
+            method = "setTargetSpeed",
+            readMethod = "getTargetSpeed",
+            role = "main_thrust_right",
+            rawIndex = 5,
+            scale = 1,
+            bias = 0,
+            outputMin = -256,
+            outputMax = 256,
+            failsafe = 0
+        },
+
+        MainThrusterLeft = {
+            enabled = true,
+            driver = "method",
+            peripheralType = "Create_RotationSpeedController",
+            remoteName = "Create_RotationSpeedController_6",
+            method = "setTargetSpeed",
+            readMethod = "getTargetSpeed",
+            role = "main_thrust_left",
+            rawIndex = 6,
+            scale = -1,
+            bias = 0,
+            outputMin = -256,
+            outputMax = 256,
+            failsafe = 0
         },
 
         -- Rotation speed controller mapping policy:

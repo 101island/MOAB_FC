@@ -37,8 +37,8 @@ return {
 
     controller = {
         period = 0.10,
-        pitchEnabled = false,
-        rollEnabled = false,
+        pitchEnabled = true,
+        rollEnabled = true,
         targetPitch = 0,
         targetRoll = 0,
         pitchScale = 1,
@@ -49,10 +49,14 @@ return {
         maxStep = 16,
 
         -- Pitch feedforward interface for main-thrust pitch coupling.
-        -- If sourceActuator is empty or absent from IO Hub snapshot, source is 0.
+        -- sourceActuators are averaged before applying gain:
+        --   ff = bias + gain * avg(sourceActuators)
         pitchFeedforward = {
             enabled = true,
-            sourceActuator = "",
+            sourceActuators = {
+                "MainThrusterLeft",
+                "MainThrusterRight"
+            },
             gain = 0,
             bias = 0,
             outputMin = -64,

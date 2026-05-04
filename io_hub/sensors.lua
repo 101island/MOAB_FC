@@ -182,4 +182,34 @@ function M.readAll(cfg)
     return result
 end
 
+function M.readSome(cfg, names)
+    local result = {
+        order = {},
+        t = now()
+    }
+
+    for _, name in ipairs(names or {}) do
+        local spec = cfg.sensors and cfg.sensors[name]
+        result.order[#result.order + 1] = name
+        if type(spec) ~= "table" or spec.enabled == false then
+            result[name] = nil
+            result[name .. "Err"] = "sensor disabled or missing"
+        else
+            local value, err
+            if spec.driver == "derived_delta" then
+                value, err = readDerivedDelta(name, spec, result, result.t)
+            else
+                value, err = readMethod(name, spec)
+            end
+
+            result[name] = value
+            if err then
+                result[name .. "Err"] = err
+            end
+        end
+    end
+
+    return result
+end
+
 return M

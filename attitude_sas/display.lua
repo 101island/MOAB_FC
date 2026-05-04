@@ -430,10 +430,34 @@ local function drawPid(device, state)
     drawFields(device, "pid", tuneFields(state))
 end
 
+local function sourceLabel(ff)
+    if type(ff) ~= "table" then return "none" end
+    if type(ff.sourceActuators) == "table" and #ff.sourceActuators > 0 then
+        local short = {}
+        for _, name in ipairs(ff.sourceActuators) do
+            if name == "MainThrusterLeft" then
+                short[#short + 1] = "L"
+            elseif name == "MainThrusterRight" then
+                short[#short + 1] = "R"
+            elseif type(name) == "string" and name ~= "" then
+                short[#short + 1] = name
+            end
+        end
+        if #short > 0 then
+            return "avg(" .. table.concat(short, "+") .. ")"
+        end
+    end
+    local single = ff.sourceActuator
+    if type(single) == "string" and single ~= "" then
+        return single
+    end
+    return "avg(L+R)"
+end
+
 local function drawFf(device, state)
-    local src = state.pitchFeedforward and state.pitchFeedforward.sourceActuator or ""
-    writeAt(device, 1, 2, "PITCH MAIN-THRUST FF source=" .. tostring(src ~= "" and src or "none"), color("cyan"))
-    writeAt(device, 1, 3, "ff = bias + gain * source", color("gray"))
+    local ff = state.pitchFeedforward or {}
+    writeAt(device, 1, 2, "PITCH MAIN-THRUST FF source=" .. sourceLabel(ff), color("cyan"))
+    writeAt(device, 1, 3, "ff = bias + gain * avg(main thrust)", color("gray"))
     drawFields(device, "ff", ffFields(state))
 end
 
@@ -576,6 +600,16 @@ function M.draw(cfg, state)
 
     drawBottomButtons(device, state)
     drawStatus(device, state)
+    return true
+end
+
+function M.clear(cfg, message)
+    local device, err = wrap(cfg)
+    if not device then return nil, err end
+    clear(device)
+    if message then
+        writeAt(device, 1, 1, tostring(message), color("gray"))
+    end
     return true
 end
 

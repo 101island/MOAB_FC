@@ -215,11 +215,34 @@ function M.setOutput(cfg, name, command)
     local scale = tonumber(spec.scale) or 1
     local bias = tonumber(spec.bias) or 0
     local exact = clamp(value * scale + bias, tonumber(spec.outputMin), tonumber(spec.outputMax))
+    local unchanged = state.initialized and math.abs((tonumber(state.exactOutput) or 0) - exact) < EPSILON
 
     state.command = value
     setExactTarget(state, exact)
 
-    return M.update(cfg, name, true)
+    return M.update(cfg, name, not unchanged)
+end
+
+function M.cached(cfg, names)
+    local result = { order = {}, t = now() }
+    local selected = names or M.names(cfg)
+
+    for _, name in ipairs(selected) do
+        result.order[#result.order + 1] = name
+        local spec = cfg.actuators and cfg.actuators[name]
+        if type(spec) ~= "table" or spec.enabled == false then
+            result[name] = nil
+            result[name .. "Err"] = "actuator disabled or missing"
+        else
+            local state = getState(name)
+            result[name] = state.output
+            result[name .. "Command"] = state.command
+            result[name .. "ExactOutput"] = state.exactOutput
+            result[name .. "Initialized"] = state.initialized
+        end
+    end
+
+    return result
 end
 
 function M.update(cfg, name, force)
@@ -335,6 +358,27 @@ function M.updateAll(cfg, force)
     return result
 end
 
+function M.updatePwm(cfg, force)
+    local result = { order = {}, t = now() }
+    for _, name in ipairs(M.names(cfg)) do
+        local spec = cfg.actuators and cfg.actuators[name]
+        local driver = spec and (spec.driver or "redstone_relay")
+        if type(spec) == "table" and spec.enabled ~= false and driver ~= "method" and pwmEnabled(spec, cfg) then
+            result.order[#result.order + 1] = name
+            local value, err = M.update(cfg, name, force)
+            if value then
+                result[name] = value.output
+                result[name .. "Command"] = value.command
+                result[name .. "ExactOutput"] = value.exactOutput
+            else
+                result[name] = nil
+                result[name .. "Err"] = err
+            end
+        end
+    end
+    return result
+end
+
 function M.runPwm(cfg, options)
     options = options or {}
     local period = tonumber(options.period)
@@ -346,7 +390,7 @@ function M.runPwm(cfg, options)
     end
 
     while true do
-        M.updateAll(cfg)
+        M.updatePwm(cfg)
         sleep(period)
     end
 end
@@ -382,6 +426,64 @@ function M.readAll(cfg)
             result[name .. "Err"] = err
         end
     end
+    return result
+end
+
+function M.readSome(cfg, names)
+    local result = { order = {}, t = now() }
+    for _, name in ipairs(names or {}) do
+        result.order[#result.order + 1] = name
+        local spec = cfg.actuators and cfg.actuators[name]
+        local device, err, address
+        if type(spec) ~= "table" or spec.enabled == false then
+            err = "actuator disabled or missing"
+        else
+            device, err, address = wrap(spec)
+        end
+
+        if device then
+            local value, readErr
+            if spec.driver == "method" then
+                if type(spec.readMethod) == "string" and spec.readMethod ~= "" then
+                    value, readErr = callMethod(device, spec.readMethod)
+                else
+                    local state = getState(name)
+                    value = state.output
+                end
+            else
+                value, readErr = getAnalog(device, spec.outputSide or "left")
+            end
+            local state = getState(name)
+            result[name] = value
+            result[name .. "Address"] = address
+            result[name .. "Command"] = state.command
+            result[name .. "ExactOutput"] = state.exactOutput
+            if readErr then
+                result[name .. "Err"] = readErr
+            end
+        else
+            result[name] = nil
+            result[name .. "Err"] = err
+        end
+    end
+    return result
+end
+
+function M.toResultMap(cfg, written)
+    local result = { order = {}, t = now() }
+    for name, value in pairs(written or {}) do
+        if type(name) == "string" and not name:find("Err$") then
+            result.order[#result.order + 1] = name
+            if type(value) == "table" then
+                result[name] = value.output
+                result[name .. "Command"] = value.command
+                result[name .. "ExactOutput"] = value.exactOutput
+            else
+                result[name] = value
+            end
+        end
+    end
+    table.sort(result.order)
     return result
 end
 

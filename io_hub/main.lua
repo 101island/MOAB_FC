@@ -13,6 +13,7 @@ end
 local cfg = loadFirst({ "fleet_config.lua", "io_hub/fleet_config.lua" })
 local hal = loadFirst({ "hal.lua", "io_hub/hal.lua" })
 local rednetUtil = loadFirst({ "rednet_util.lua", "io_hub/rednet_util.lua", "common/rednet_util.lua" })
+local BUILD = "exchange-v2"
 
 local function requestIdOf(msg)
     if type(msg) == "table" then
@@ -43,10 +44,24 @@ local function handle(sender, msg)
         reply(sender, true, cfg, nil, msg.requestId)
     elseif msg.type == "get_snapshot" then
         reply(sender, true, hal.snapshot(cfg), nil, msg.requestId)
+    elseif msg.type == "get_snapshot_some" then
+        reply(sender, true, hal.snapshotSome(
+            cfg,
+            msg.sensors or msg.sensorNames or {},
+            msg.actuators or msg.actuatorNames or {}
+        ), nil, msg.requestId)
+    elseif msg.type == "exchange" then
+        reply(sender, true, hal.exchange(cfg, msg), nil, msg.requestId)
     elseif msg.type == "read_sensors" then
         reply(sender, true, hal.readSensors(cfg), nil, msg.requestId)
+    elseif msg.type == "read_sensors_some" then
+        reply(sender, true, hal.readSensorsSome(cfg, msg.names or msg.sensors or {}), nil, msg.requestId)
     elseif msg.type == "read_actuators" then
         reply(sender, true, hal.readActuators(cfg), nil, msg.requestId)
+    elseif msg.type == "read_actuators_some" then
+        reply(sender, true, hal.readActuatorsSome(cfg, msg.names or msg.actuators or {}), nil, msg.requestId)
+    elseif msg.type == "read_actuators_cached" then
+        reply(sender, true, hal.readActuatorsCached(cfg, msg.names or msg.actuators or {}), nil, msg.requestId)
     elseif msg.type == "write_actuator" then
         local result, err = hal.writeActuator(cfg, msg.name, msg.value)
         reply(sender, result ~= nil, result, err, msg.requestId)
@@ -71,6 +86,7 @@ end
 print("MOAB IO Hub")
 print("modem=" .. tostring(openedSide))
 print("protocol=" .. tostring(cfg.protocol))
+print("rpc=" .. BUILD)
 
 local function rpcLoop()
     while true do
@@ -89,7 +105,7 @@ local function pwmLoop()
     end
 
     while true do
-        hal.updateActuators(cfg, false)
+        hal.updatePwmActuators(cfg, false)
         sleep(period)
     end
 end
@@ -107,6 +123,6 @@ else
             end
         end
 
-        hal.updateActuators(cfg, false)
+        hal.updatePwmActuators(cfg, false)
     end
 end

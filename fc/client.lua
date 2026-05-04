@@ -13,8 +13,9 @@ local function loadFirst(paths)
 end
 
 local rednetUtil = loadFirst({
-    "attitude_sas/rednet_util.lua",
-    "attitude_rednet_util.lua"
+    "fc/rednet_util.lua",
+    "rednet_util.lua",
+    "common/rednet_util.lua"
 })
 
 local function now()
@@ -39,7 +40,7 @@ local sequence = 0
 
 local function nextRequestId()
     sequence = sequence + 1
-    local id = "attitude"
+    local id = "fc"
     if type(os) == "table" and type(os.getComputerID) == "function" then
         id = tostring(os.getComputerID())
     end
@@ -126,6 +127,38 @@ function M.snapshot(cfg)
     return result, nil, reply
 end
 
+function M.snapshotSome(cfg, sensorNames, actuatorNames)
+    local result, err, reply = M.request(cfg, {
+        type = "get_snapshot_some",
+        sensors = sensorNames or {},
+        actuators = actuatorNames or {}
+    })
+    if not result then
+        return nil, err, reply
+    end
+    if type(result.sensors) ~= "table" or type(result.actuators) ~= "table" then
+        return nil, "invalid IO Hub snapshot reply", reply
+    end
+    return result, nil, reply
+end
+
+function M.exchange(cfg, options)
+    options = options or {}
+    local result, err, reply = M.request(cfg, {
+        type = "exchange",
+        readSensors = options.readSensors or options.sensors or {},
+        readActuators = options.readActuators or options.actuators or {},
+        writeActuators = options.writeActuators
+    })
+    if not result then
+        return nil, err, reply
+    end
+    if type(result.sensors) ~= "table" or type(result.actuators) ~= "table" then
+        return nil, "invalid IO Hub exchange reply", reply
+    end
+    return result, nil, reply
+end
+
 function M.ping(cfg)
     return M.request(cfg, { type = "ping" })
 end
@@ -138,8 +171,29 @@ function M.readSensors(cfg)
     return M.request(cfg, { type = "read_sensors" })
 end
 
+function M.readSensorsSome(cfg, names)
+    return M.request(cfg, {
+        type = "read_sensors_some",
+        names = names or {}
+    })
+end
+
 function M.readActuators(cfg)
     return M.request(cfg, { type = "read_actuators" })
+end
+
+function M.readActuatorsSome(cfg, names)
+    return M.request(cfg, {
+        type = "read_actuators_some",
+        names = names or {}
+    })
+end
+
+function M.readActuatorsCached(cfg, names)
+    return M.request(cfg, {
+        type = "read_actuators_cached",
+        names = names or {}
+    })
 end
 
 function M.writeActuator(cfg, name, value)

@@ -10,8 +10,31 @@ local function loadFirst(paths)
     error("cannot load module: " .. table.concat(paths, ", "))
 end
 
-local cfg = loadFirst({ "attitude_sas/config.lua", "attitude_config.lua" })
-local client = loadFirst({ "attitude_sas/client.lua", "attitude_client.lua" })
+local function runningDir()
+    if type(shell) == "table" and type(shell.getRunningProgram) == "function" and
+        type(fs) == "table" and type(fs.getDir) == "function" then
+        local dir = fs.getDir(shell.getRunningProgram() or "")
+        if dir and dir ~= "." then return dir end
+    end
+    return ""
+end
+
+local function joinPath(dir, name)
+    if dir == nil or dir == "" then return name end
+    if type(fs) == "table" and type(fs.combine) == "function" then
+        return fs.combine(dir, name)
+    end
+    return dir .. "/" .. name
+end
+
+local function modulePaths(name)
+    local path = joinPath(runningDir(), name)
+    if path == name then return { name } end
+    return { path, name }
+end
+
+local cfg = loadFirst(modulePaths("config.lua"))
+local client = loadFirst(modulePaths("client.lua"))
 
 local args = { ... }
 if tonumber(args[1]) then
